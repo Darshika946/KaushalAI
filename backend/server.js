@@ -2,17 +2,56 @@ import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 import { connectDB } from "./lib/db.js";
 import authRoute from "./routes/auth.route.js";
 import aiRoute from "./routes/ai.route.js";
 
 dotenv.config();
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
+
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "https://kaushalai.onrender.com",
+];
+
+if (process.env.CLIENT_ORIGIN) {
+  process.env.CLIENT_ORIGIN.split(",").forEach((origin) => {
+    const trimmed = origin.trim();
+    if (trimmed && !allowedOrigins.includes(trimmed)) {
+      allowedOrigins.push(trimmed);
+    }
+  });
+}
 
 app.use(
   cors({
-    origin: ["http://localhost:3000", "https://kaushalai.onrender.com", "http://localhost:5173"],
+    origin: (origin, callback) => {
+      // Allow requests with no origin (such as curl, mobile apps, or server-to-server)
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      // Allow explicitly configured origins (local development and CLIENT_ORIGIN)
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // Automatically support Vercel preview and production subdomains
+      if (/^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/.test(origin)) {
+        return callback(null, true);
+      }
+
+      // Strictly reject all other origins
+      return callback(new Error('Not allowed by CORS'));
+    },
     credentials: true,
   })
 );
@@ -26,8 +65,25 @@ const PORT = process.env.PORT || 8000;
 // API routes
 app.use("/api/v1/auth", authRoute);
 app.use("/api/v1/ai", aiRoute);
-app.use("/", aiRoute); // Compatibility alias for root endpoints (/generate-questions, /evaluate-answer, /chat)
+app.use("/", aiRoute); // Root aliases for /generate-questions, /evaluate-answer, /chat, /generate-resume
 
+// Serve production static assets if frontend dist build is present
+const distPath = path.resolve(__dirname, "../frontend/dist");
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(distPath, "index.html"));
+  });
+}
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  if (err.message && (err.message === "Not allowed by CORS" || err.message.startsWith("CORS"))) {
+    return res.status(403).json({ success: false, message: err.message });
+  }
+  console.error("Unhandled server error:", err);
+  res.status(500).json({ success: false, message: "Internal server error" });
+});
 
 app.listen(PORT, async () => {
   console.log(`Server is running on port ${PORT}`);
@@ -37,4 +93,3 @@ app.listen(PORT, async () => {
     console.error("Failed to connect to MongoDB:", error.message);
   }
 });
-
