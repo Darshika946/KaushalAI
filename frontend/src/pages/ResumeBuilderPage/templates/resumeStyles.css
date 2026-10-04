@@ -1,0 +1,90 @@
+/* Resume Builder A4 Print and Layout Stylesheet */
+
+/* Standard Fixed A4 Page Container (210mm x 297mm) */
+.resume-a4-page {
+  width: 210mm;
+  min-height: 297mm;
+  height: 297mm;
+  box-sizing: border-box;
+  background-color: #ffffff;
+  color: #1e293b;
+  margin: 0 auto;
+  position: relative;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+/* Guardrails against awkward page breaks during multi-page printing */
+.resume-section {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.resume-item {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* Common Layout Elements */
+.resume-text-muted {
+  color: #64748b;
+}
+
+.resume-bullet-list {
+  list-style-type: disc;
+  margin-left: 1.15rem;
+  padding-left: 0;
+  margin-top: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+
+.resume-bullet-item {
+  margin-bottom: 0.25rem;
+  line-height: 1.45;
+  font-size: 11px;
+}
+
+/* Strict A4 Print Stylesheet */
+@media print {
+  @page {
+    size: 210mm 297mm;
+    margin: 0mm;
+  }
+
+  html,
+  body {
+    width: 210mm !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide interactive application UI during printing */
+  .no-print,
+  button,
+  nav,
+  header,
+  footer,
+  aside,
+  .template-switcher-bar {
+    display: none !important;
+  }
+
+  .resume-a4-page {
+    width: 210mm !important;
+    min-height: 297mm !important;
+    height: auto !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    page-break-after: avoid;
+  }
+}
