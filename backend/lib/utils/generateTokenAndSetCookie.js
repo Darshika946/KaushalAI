@@ -5,11 +5,13 @@ const generateTokenAndSetCookie = (userId, res) => {
     expiresIn: "15d",
   });
 
+  const isProduction = process.env.NODE_ENV === "production" || !!process.env.RENDER;
+
   res.cookie("jwt", token, {
     maxAge: 15 * 24 * 60 * 60 * 1000,
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production", // must be true for deployed site (https)
-    sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax", // None for cross-site in prod
+    secure: isProduction, // must be true for cross-site cookies over https
+    sameSite: isProduction ? "None" : "Lax", // None required for cross-site cookies between Vercel and Render
   });
 };
 

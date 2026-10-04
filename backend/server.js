@@ -11,6 +11,10 @@ import aiRoute from "./routes/ai.route.js";
 
 dotenv.config();
 
+if (process.env.RENDER) {
+  process.env.NODE_ENV = "production";
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
