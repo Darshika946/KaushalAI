@@ -46,6 +46,9 @@ const MockInterviewPage = () => {
   const [runningIndex, setRunningIndex] = useState(null);
   const [evaluations, setEvaluations] = useState([]);
   const [step, setStep] = useState(0);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionProgress, setSubmissionProgress] = useState('');
 
   // Speech Recognition States
   const [listeningIndex, setListeningIndex] = useState(null);
@@ -387,8 +390,11 @@ console.log(solution());`;
       language: effectiveLang,
     };
 
+    setIsGenerating(true);
     try {
-      const res = await axios.post(`${AI_MOCK_URL}/generate-questions`, payload);
+      const res = await axios.post(`${AI_MOCK_URL}/generate-questions`, payload, {
+        timeout: 60000,
+      });
       const fetchedQuestions = res.data.questions || [];
       setQuestions(fetchedQuestions);
 
@@ -431,6 +437,8 @@ console.log(solution());`;
       setAnswers(initialAnswers);
       setConsoleOutputs({});
       setStep(2);
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -448,38 +456,49 @@ console.log(solution());`;
     const monacoLang = getMonacoLanguage(effectiveLang);
     const evals = [];
 
-    for (let i = 0; i < questions.length; i++) {
-      const isCoding = isCodeRequiredQuestion(questions[i]);
-      let candidateAnswer = answers[i] || '';
+    setIsSubmitting(true);
+    try {
+      for (let i = 0; i < questions.length; i++) {
+        setSubmissionProgress(`Evaluating response ${i + 1} of ${questions.length}...`);
+        const isCoding = isCodeRequiredQuestion(questions[i]);
+        let candidateAnswer = answers[i] || '';
 
-      if (isCoding) {
-        const executionInfo = consoleOutputs[i];
-        let execSummary = 'None (Code was not run before submission)';
-        if (executionInfo) {
-          execSummary = `Status: ${executionInfo.status}\nStdout: ${executionInfo.stdout || 'None'}\nStderr: ${executionInfo.stderr || 'None'}`;
+        if (isCoding) {
+          const executionInfo = consoleOutputs[i];
+          let execSummary = 'None (Code was not run before submission)';
+          if (executionInfo) {
+            execSummary = `Status: ${executionInfo.status}\nStdout: ${executionInfo.stdout || 'None'}\nStderr: ${executionInfo.stderr || 'None'}`;
+          }
+          candidateAnswer = `Candidate Code (${effectiveLang}):\n\`\`\`${monacoLang}\n${answers[i] || ''}\n\`\`\`\n\nTerminal Run Results:\n${execSummary}`;
         }
-        candidateAnswer = `Candidate Code (${effectiveLang}):\n\`\`\`${monacoLang}\n${answers[i] || ''}\n\`\`\`\n\nTerminal Run Results:\n${execSummary}`;
-      }
 
-      try {
-        const res = await axios.post(`${AI_MOCK_URL}/evaluate-answer`, {
-          question: questions[i],
-          answer: candidateAnswer,
-          language: effectiveLang,
-        });
-        evals.push(res.data.evaluation);
-      } catch (err) {
-        evals.push({
-          is_correct: false,
-          where_you_are_wrong: 'No meaningful answer provided or evaluation error occurred.',
-          ideal_correct_answer: 'Ensure your response thoroughly covers key concepts, principles, and accurate technical terminology.',
-          score: 0,
-          feedback_summary: 'Non-responsive or invalid submission.',
-        });
+        try {
+          const res = await axios.post(
+            `${AI_MOCK_URL}/evaluate-answer`,
+            {
+              question: questions[i],
+              answer: candidateAnswer,
+              language: effectiveLang,
+            },
+            { timeout: 60000 }
+          );
+          evals.push(res.data.evaluation);
+        } catch (err) {
+          evals.push({
+            is_correct: false,
+            where_you_are_wrong: 'No meaningful answer provided or evaluation error occurred.',
+            ideal_correct_answer: 'Ensure your response thoroughly covers key concepts, principles, and accurate technical terminology.',
+            score: 0,
+            feedback_summary: 'Non-responsive or invalid submission.',
+          });
+        }
       }
+      setEvaluations(evals);
+      setStep(3);
+    } finally {
+      setIsSubmitting(false);
+      setSubmissionProgress('');
     }
-    setEvaluations(evals);
-    setStep(3);
   };
 
   return (
@@ -612,14 +631,14 @@ console.log(solution());`;
 
             <button
               onClick={generateQuestions}
-              disabled={!params.domain || (selectedLanguage === 'Other' && !customLanguage.trim())}
+              disabled={isGenerating || !params.domain || (selectedLanguage === 'Other' && !customLanguage.trim())}
               className={`w-full py-3 rounded-md font-semibold transition mt-2 ${
-                !params.domain || (selectedLanguage === 'Other' && !customLanguage.trim())
+                isGenerating || !params.domain || (selectedLanguage === 'Other' && !customLanguage.trim())
                   ? 'bg-gray-400 text-white cursor-not-allowed'
                   : 'bg-blue-700 hover:bg-blue-800 text-white'
               }`}
             >
-              Generate Questions
+              {isGenerating ? 'Connecting to AI Engine (Please wait ~30s on cold start)...' : 'Generate Questions'}
             </button>
           </div>
         )}
@@ -770,9 +789,12 @@ console.log(solution());`;
 
             <button
               onClick={submitAnswers}
-              className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-md font-semibold transition"
+              disabled={isSubmitting}
+              className={`w-full py-3 rounded-md font-semibold transition ${
+                isSubmitting ? 'bg-gray-400 text-white cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 text-white'
+              }`}
             >
-              Submit Answers
+              {isSubmitting ? submissionProgress || 'Evaluating responses with Gemini AI...' : 'Submit Answers'}
             </button>
           </div>
         )}

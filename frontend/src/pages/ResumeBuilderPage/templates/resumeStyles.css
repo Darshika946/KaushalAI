@@ -66,17 +66,17 @@
     print-color-adjust: exact !important;
   }
 
-  /* Hide interactive application UI during printing */
+  /* Hide only top-level interactive application UI outside the resume */
   .no-print,
   button,
-  nav,
-  header,
-  footer,
-  aside,
-  .template-switcher-bar {
+  .template-switcher-bar,
+  body > header,
+  body > nav,
+  body > footer {
     display: none !important;
   }
 
+  /* Explicitly protect internal resume columns, headers, and sidebars */
   .resume-a4-page {
     width: 210mm !important;
     min-height: 297mm !important;
@@ -86,5 +86,19 @@
     border: none !important;
     border-radius: 0 !important;
     page-break-after: avoid;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+
+  .resume-a4-page header {
+    display: block !important;
+  }
+
+  .resume-a4-page aside {
+    display: flex !important;
+  }
+
+  .resume-a4-page main {
+    display: flex !important;
   }
 }

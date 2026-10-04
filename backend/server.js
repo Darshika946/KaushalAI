@@ -20,6 +20,7 @@ const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5173",
   "https://kaushalai.onrender.com",
+  "https://kaushalai-sigma.vercel.app",
 ];
 
 if (process.env.CLIENT_ORIGIN) {

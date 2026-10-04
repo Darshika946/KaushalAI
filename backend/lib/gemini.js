@@ -124,35 +124,52 @@ export const evaluateInterviewAnswer = async ({
   answer,
   language = "English",
 }) => {
+  const trimmed = (answer || "").trim();
+  const isGibberishOrEmpty =
+    !trimmed ||
+    trimmed.length < 3 ||
+    /^(abc|asdf|qwerty|xyz|test|test1|idk|no idea|dunno|none|na|n\/a|\.|\?|\.\.\.)$/i.test(trimmed) ||
+    /^([a-zA-Z0-9])\1{2,}$/i.test(trimmed);
+
+  if (isGibberishOrEmpty) {
+    return {
+      is_correct: false,
+      where_you_are_wrong: 'No meaningful answer provided. The candidate submitted empty, gibberish, or irrelevant test input.',
+      ideal_correct_answer: 'Provide a comprehensive, technically accurate explanation addressing the specific concepts in the question.',
+      score: 0,
+      feedback_summary: 'Non-responsive or gibberish answer detected. Score is 0/10.',
+    };
+  }
+
   const prompt = `You are the KaushalAI uncompromising technical interviewer evaluating candidate answers.
 
-### MANDATORY OUTPUT AND FORMATTING RULES:
+MANDATORY OUTPUT AND FORMATTING RULES:
 1. Zero Emojis: Do not use any emojis, icons, or Unicode symbols anywhere in the output.
-2. No Double Quotes Inside Strings: Never use double quotes (") inside text values or descriptions. Use single quotes (\') exclusively to prevent JSON syntax or parsing issues.
+2. No Double Quotes Inside Strings: Never use double quotes (") inside text values or descriptions. Use single quotes (') exclusively to prevent JSON syntax or parsing issues.
 3. Clean Line Breaks: Whenever an explanation contains multiple points, every single point must begin on a new line separated by \\n. Never group points into one paragraph.
 4. Structured Response: Keep feedback direct, technical, and strictly free of polite conversational pleasantries, flattery, or filler.
 
-### CRITICAL RULES FOR GIBBERISH, NONSENSE, OR BLANK INPUT:
-- If the candidate types random letters, tests, single filler words, jokes, or nonsensical input (e.g., 'abc', 'asdf', 'idk', 'test', '...', 'no idea'):
+CRITICAL RULES FOR GIBBERISH, NONSENSE, OR IRRELEVANT INPUT:
+- If the candidate types random letters, single filler words, jokes, or nonsensical input (e.g., 'abc', 'asdf', 'idk', 'test', 'no idea'):
   1. Set is_correct to false.
   2. Set score to 0.
   3. Set where_you_are_wrong to: 'No meaningful answer provided. The response is gibberish or irrelevant filler.'
   4. Provide the complete factual answer under ideal_correct_answer.
   5. DO NOT offer polite compliments like 'Good attempt' or 'Demonstrated understanding'.
-11
-### Scoring Rubric:
+
+Scoring Rubric:
 - 0/10: Gibberish, random keystrokes, completely off-topic, or empty.
 - 1–3/10: Factual errors, major misconceptions, or fundamentally wrong reasoning.
 - 4–6/10: Partial answer, correct high-level idea but missing essential technical substance.
 - 7–8/10: Mostly correct with minor omissions.
 - 9–10/10: Completely correct, thorough, and technically precise.
 
-### Input Data
+Input Data
 Question: ${question}
-Candidate Response: ${answer || "No response provided"}
+Candidate Response: ${trimmed}
 Language: ${language}
 
-### Output Format (Strict JSON)
+Output Format (Strict JSON)
 Respond strictly in valid JSON format:
 {
   "is_correct": <true or false>,
@@ -166,13 +183,24 @@ Respond strictly in valid JSON format:
 
   try {
     const cleaned = text.replace(/```(?:json)?/gi, "").trim();
-    // Handle cases where literal unescaped newlines appear inside JSON strings
+    let parsed;
     try {
-      return JSON.parse(cleaned);
+      parsed = JSON.parse(cleaned);
     } catch {
       const sanitized = cleaned.replace(/(?<=:\s*"[^"]*)\r?\n(?=[^"]*")/g, "\\n");
-      return JSON.parse(sanitized);
+      parsed = JSON.parse(sanitized);
     }
+
+    // Defensive clamping against inflated scores for incorrect/gibberish answers
+    if (!parsed.is_correct && parsed.score > 3) {
+      parsed.score = Math.min(parsed.score, 3);
+    }
+    if (/gibberish|irrelevant|no meaningful|nonsense/i.test(parsed.where_you_are_wrong)) {
+      parsed.score = 0;
+      parsed.is_correct = false;
+    }
+
+    return parsed;
   } catch (err) {
     console.error("Failed to parse strict JSON from Gemini evaluation:", err);
     return {
