@@ -23,13 +23,13 @@ export const connectDB = async () => {
     throw new Error("MONGODB_URI environment variable is not defined in .env");
   }
 
-  if (cached.conn) {
+  if (cached.conn && mongoose.connection.readyState === 1) {
     return cached.conn;
   }
 
   if (!cached.promise) {
     const opts = {
-      bufferCommands: false,
+      bufferCommands: true,
       maxPoolSize: 10,
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
@@ -59,10 +59,19 @@ export const connectDB = async () => {
     cached.conn = await cached.promise;
   } catch (e) {
     cached.promise = null;
+    cached.conn = null;
     throw e;
   }
 
   return cached.conn;
+};
+
+/**
+ * Checks whether MongoDB connection is currently active
+ * @returns {boolean} true if connected (readyState === 1)
+ */
+export const isDBConnected = () => {
+  return mongoose.connection.readyState === 1;
 };
 
 /**

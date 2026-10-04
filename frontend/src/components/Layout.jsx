@@ -1,6 +1,7 @@
 import React from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
+import { API_BASE_URL } from "../config/api";
 
 const Layout = () => {
   const navigate = useNavigate();
@@ -8,7 +9,7 @@ const Layout = () => {
 
   const handleLogout = async () => {
     try {
-      await fetch("/api/v1/auth/logout", {
+      await fetch(`${API_BASE_URL}/api/v1/auth/logout`, {
         method: "POST",
         credentials: "include",
       });

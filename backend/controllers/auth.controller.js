@@ -50,32 +50,35 @@ export const signup = async (req, res) => {
     });
   } catch (error) {
     console.error(`Error in signup controller: ${error.message}`);
-    return res.status(400).json({ error: error.message });
+    return res.status(500).json({ error: error.message || "Internal server error" });
   }
 };
 export const login = async (req, res) => {
   try {
     const { username, password } = req.body;
     if (!username || !password) {
-      return res.status(400).json({ success: false, message: "Username and password are required" });
+      return res.status(400).json({ success: false, error: "Username and password are required", message: "Username and password are required" });
     }
     const user = await User.findOne({ username });
     if (!user) {
-      return res.status(404).json({ success: false, message: "user not found" });
+      return res.status(404).json({ success: false, error: "User not found", message: "User not found" });
     }
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
-      return res.status(401).json({ success: false, message: "Invalid password" });
+      return res.status(401).json({ success: false, error: "Invalid password", message: "Invalid password" });
     }
     generateTokenAndSetCookie(user._id, res);
     return res.status(200).json({
       success: true,
       _id: user._id,
+      username: user.username,
+      name: user.name,
+      email: user.email,
       message: `logged in as ${user.username}`,
     });
   } catch (error) {
     console.error(`error in login controller: ${error.message}`);
-    return res.status(500).json({ success: false, message: "Internal Server Error" });
+    return res.status(500).json({ success: false, error: "Internal Server Error", message: "Internal Server Error" });
   }
 };
 
@@ -84,8 +87,8 @@ export const logout = async (req, res) => {
     res.cookie("jwt", "", {
       httpOnly: true,
       expires: new Date(0),
-      sameSite: "Lax", // or "None" if you're using cross-site cookies
-      secure: process.env.NODE_ENV === "production", // true in production
+      sameSite: process.env.NODE_ENV === "production" ? "None" : "Lax",
+      secure: process.env.NODE_ENV === "production",
     });
     res.status(200).json({ message: "Logged out successfully" });
   } catch (error) {

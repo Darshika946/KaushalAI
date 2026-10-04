@@ -2,6 +2,7 @@ import React from 'react';
 import { Carousel } from 'react-responsive-carousel';
 import 'react-responsive-carousel/lib/styles/carousel.min.css';
 import { useNavigate } from 'react-router-dom';
+import { API_BASE_URL } from '../../config/api';
 import interview1 from './images/image.png';
 import interview2 from './images/interview2.png';
 import interview3 from './images/interview3.png';
@@ -46,9 +47,10 @@ const topics = [
 
 const logoutButton = async () => {
   try {
-    const res = await fetch("/api/v1/auth/logout", {
+    const res = await fetch(`${API_BASE_URL}/api/v1/auth/logout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
     });
     const data = await res.json();
     console.log(data);

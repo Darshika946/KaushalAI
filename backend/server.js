@@ -5,7 +5,7 @@ import cookieParser from "cookie-parser";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
-import { connectDB } from "./lib/db.js";
+import { connectDB, isDBConnected } from "./lib/db.js";
 import authRoute from "./routes/auth.route.js";
 import aiRoute from "./routes/ai.route.js";
 
@@ -63,6 +63,21 @@ app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 8000;
 
+// Database connection readiness check middleware for auth routes
+app.use("/api/v1/auth", async (req, res, next) => {
+  try {
+    if (!isDBConnected()) {
+      await connectDB();
+    }
+    next();
+  } catch (dbErr) {
+    console.error("Database connection failure on auth route:", dbErr.message);
+    return res.status(503).json({
+      error: "Database service unavailable. Please check MONGODB_URI and MongoDB Atlas network access.",
+    });
+  }
+});
+
 // API routes
 app.use("/api/v1/auth", authRoute);
 app.use("/api/v1/ai", aiRoute);
@@ -70,7 +85,13 @@ app.use("/", aiRoute); // Root aliases for /generate-questions, /evaluate-answer
 
 // Health check endpoint
 app.get("/health", (req, res) => {
-  res.status(200).json({ status: "healthy", service: "KaushalAI API", timestamp: new Date().toISOString() });
+  const dbConnected = isDBConnected();
+  res.status(dbConnected ? 200 : 503).json({
+    status: dbConnected ? "healthy" : "degraded",
+    database: dbConnected ? "connected" : "disconnected",
+    service: "KaushalAI API",
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // Serve production static assets if frontend dist build is present
@@ -95,11 +116,16 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, message: "Internal server error" });
 });
 
-app.listen(PORT, async () => {
-  console.log(`Server is running on port ${PORT}`);
+const startServer = async () => {
   try {
     await connectDB();
   } catch (error) {
-    console.error("Failed to connect to MongoDB:", error.message);
+    console.error("Initial MongoDB connection attempt failed:", error.message);
   }
-});
+
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+};
+
+startServer();
