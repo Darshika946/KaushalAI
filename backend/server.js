@@ -68,12 +68,21 @@ app.use("/api/v1/auth", authRoute);
 app.use("/api/v1/ai", aiRoute);
 app.use("/", aiRoute); // Root aliases for /generate-questions, /evaluate-answer, /chat, /generate-resume
 
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "healthy", service: "KaushalAI API", timestamp: new Date().toISOString() });
+});
+
 // Serve production static assets if frontend dist build is present
 const distPath = path.resolve(__dirname, "../frontend/dist");
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
   app.get("*", (req, res) => {
     res.sendFile(path.join(distPath, "index.html"));
+  });
+} else {
+  app.get("/", (req, res) => {
+    res.status(200).json({ status: "healthy", service: "KaushalAI API", timestamp: new Date().toISOString() });
   });
 }
 
