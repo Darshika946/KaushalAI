@@ -25,6 +25,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "https://kaushalai.onrender.com",
   "https://kaushalai-sigma.vercel.app",
+  "https://kaushalai-81ixgpyuf-ds6-f1e1.vercel.app",
 ];
 
 if (process.env.CLIENT_ORIGIN) {
@@ -50,7 +51,7 @@ app.use(
       }
 
       // Automatically support Vercel preview and production subdomains
-      if (/^https:\/\/[a-zA-Z0-9-]+\.vercel\.app$/.test(origin)) {
+      if (/^https:\/\/[a-zA-Z0-9_.-]+\.vercel\.app$/.test(origin)) {
         return callback(null, true);
       }
 
