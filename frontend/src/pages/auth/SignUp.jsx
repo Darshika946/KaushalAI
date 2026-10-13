@@ -1,66 +1,111 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
 import { useQueryClient } from "@tanstack/react-query";
 import { API_BASE_URL } from "../../config/api";
 
-const SignUp = () => {
-  const [username, setUsername] = useState("");
-  const [email, setEmail] = useState("");
-  const [name, setName] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [passwordMismatch, setPasswordMismatch] = useState(false);
+const signupFormSchema = z
+  .object({
+    name: z
+      .string()
+      .min(2, "Full name must be at least 2 characters")
+      .max(50, "Full name cannot exceed 50 characters"),
+    email: z
+      .string()
+      .email("Please enter a valid email address")
+      .toLowerCase(),
+    password: z
+      .string()
+      .min(8, "Password must be at least 8 characters long")
+      .regex(/[a-z]/, "Must contain at least 1 lowercase letter")
+      .regex(/[A-Z]/, "Must contain at least 1 uppercase letter")
+      .regex(/[0-9]/, "Must contain at least 1 digit")
+      .regex(/[!@#$%^&*]/, "Must contain at least 1 special symbol (!@#$%^&*)"),
+    confirmPassword: z.string().min(1, "Please confirm your password"),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords do not match",
+    path: ["confirmPassword"],
+  });
 
-  // OTP Verification state
-  const [isOtpStep, setIsOtpStep] = useState(false);
-  const [otp, setOtp] = useState("");
+const SignUp = () => {
+  const [step, setStep] = useState(1);
+  const [registeredEmail, setRegisteredEmail] = useState("");
+  const [otpValues, setOtpValues] = useState(["", "", "", "", "", ""]);
   const [cooldown, setCooldown] = useState(60);
   const [ttlSeconds, setTtlSeconds] = useState(300);
+  const [serverError, setServerError] = useState("");
+  const [serverInfo, setServerInfo] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [error, setError] = useState("");
-  const [infoMessage, setInfoMessage] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-
+  const otpInputsRef = useRef([]);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  // Immediate mismatch validation
-  useEffect(() => {
-    if (confirmPassword && password !== confirmPassword) {
-      setPasswordMismatch(true);
-    } else {
-      setPasswordMismatch(false);
-    }
-  }, [password, confirmPassword]);
+  const {
+    register,
+    handleSubmit,
+    watch,
+    formState: { errors },
+  } = useForm({
+    resolver: zodResolver(signupFormSchema),
+    mode: "onChange",
+  });
 
-  // Timers for OTP screen
+  const watchedPassword = watch("password", "");
+  const watchedConfirmPassword = watch("confirmPassword", "");
+
+  // Password strength meter calculation
+  const getPasswordStrength = (pwd) => {
+    if (!pwd) return { score: 0, label: "None", color: "bg-gray-200" };
+    let score = 0;
+    if (pwd.length >= 8) score += 1;
+    if (/[a-z]/.test(pwd) && /[A-Z]/.test(pwd)) score += 1;
+    if (/\d/.test(pwd)) score += 1;
+    if (/[!@#$%^&*]/.test(pwd)) score += 1;
+
+    switch (score) {
+      case 1:
+        return { score: 1, label: "Weak", color: "bg-red-500", text: "text-red-600" };
+      case 2:
+        return { score: 2, label: "Fair", color: "bg-orange-400", text: "text-orange-500" };
+      case 3:
+        return { score: 3, label: "Good", color: "bg-yellow-400", text: "text-yellow-600" };
+      case 4:
+        return { score: 4, label: "Strong", color: "bg-green-500", text: "text-green-600" };
+      default:
+        return { score: 0, label: "Very Weak", color: "bg-red-400", text: "text-red-500" };
+    }
+  };
+
+  const passwordStrength = getPasswordStrength(watchedPassword);
+
+  // Real-time inline confirm password match check
+  const isConfirmFilled = watchedConfirmPassword.length > 0;
+  const isPasswordMatching =
+    isConfirmFilled && watchedPassword === watchedConfirmPassword;
+  const isPasswordMismatched =
+    isConfirmFilled && watchedPassword !== watchedConfirmPassword;
+
+  // Step 2 Countdown Timer
   useEffect(() => {
     let timer;
-    if (isOtpStep) {
+    if (step === 2) {
       timer = setInterval(() => {
         setCooldown((prev) => (prev > 0 ? prev - 1 : 0));
         setTtlSeconds((prev) => (prev > 0 ? prev - 1 : 0));
       }, 1000);
     }
     return () => clearInterval(timer);
-  }, [isOtpStep]);
+  }, [step]);
 
-  const handleSignupSubmit = async (e) => {
-    e.preventDefault();
-    setError("");
-    setInfoMessage("");
-
-    if (!name || !email || !password || !confirmPassword) {
-      setError("Please fill in all required fields.");
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-
-    setIsLoading(true);
+  // Step 1: Submit primary details and trigger OTP
+  const onSignupSubmit = async (formData) => {
+    setServerError("");
+    setServerInfo("");
+    setIsSubmitting(true);
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/auth/signup`, {
@@ -68,102 +113,149 @@ const SignUp = () => {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          name,
-          email,
-          password,
-          confirmPassword,
-          username: username.trim() || undefined,
+          name: formData.name.trim(),
+          email: formData.email.trim().toLowerCase(),
+          password: formData.password,
+          confirmPassword: formData.confirmPassword,
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        setError(data.message || data.error || "Signup failed");
+        setServerError(data.message || data.error || "Signup failed");
       } else {
-        setIsOtpStep(true);
+        setRegisteredEmail(formData.email.trim().toLowerCase());
         setCooldown(data.resendCooldownSeconds || 60);
         setTtlSeconds(data.expiresInSeconds || 300);
-        setInfoMessage(data.message || "A 6-digit OTP code has been sent to your email.");
+        setServerInfo(data.message || "A 6-digit OTP code has been sent to your email.");
+        setStep(2);
       }
     } catch (err) {
-      setError("Network or server error. Please try again.");
-      console.error("Signup Error:", err);
+      setServerError("Network error. Please check your connection and try again.");
     } finally {
-      setIsLoading(false);
+      setIsSubmitting(false);
     }
   };
 
-  const handleVerifyOtp = async (e) => {
-    e.preventDefault();
-    setError("");
-    setInfoMessage("");
+  // Step 2: Segmented OTP Input Handling
+  const handleOtpChange = (index, value) => {
+    const digit = value.replace(/\D/g, "").slice(-1);
+    const newOtp = [...otpValues];
+    newOtp[index] = digit;
+    setOtpValues(newOtp);
 
-    if (!otp || otp.trim().length !== 6) {
-      setError("Please enter a valid 6-digit OTP code.");
+    // Auto-focus next input box
+    if (digit && index < 5) {
+      otpInputsRef.current[index + 1]?.focus();
+    }
+  };
+
+  const handleOtpKeyDown = (index, e) => {
+    if (e.key === "Backspace") {
+      if (!otpValues[index] && index > 0) {
+        otpInputsRef.current[index - 1]?.focus();
+      }
+    }
+  };
+
+  const handleOtpPaste = (e) => {
+    e.preventDefault();
+    const pasted = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
+    if (!pasted) return;
+
+    const newOtp = [...otpValues];
+    for (let i = 0; i < 6; i++) {
+      newOtp[i] = pasted[i] || "";
+    }
+    setOtpValues(newOtp);
+
+    const targetIndex = Math.min(pasted.length, 5);
+    otpInputsRef.current[targetIndex]?.focus();
+  };
+
+  // Step 2: Verify OTP
+  const onVerifyOtpSubmit = async (e) => {
+    e.preventDefault();
+    setServerError("");
+    setServerInfo("");
+    const fullOtp = otpValues.join("");
+
+    if (fullOtp.length !== 6) {
+      setServerError("Please enter all 6 digits of the OTP.");
       return;
     }
 
-    setIsLoading(true);
+    setIsSubmitting(true);
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/auth/verify-otp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email: email.trim().toLowerCase(), otp: otp.trim() }),
+        body: JSON.stringify({
+          email: registeredEmail,
+          otp: fullOtp,
+        }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        setError(data.message || data.error || "OTP verification failed");
+        setServerError(data.message || data.error || "OTP verification failed");
       } else {
         await queryClient.invalidateQueries({ queryKey: ["authUser"] });
         navigate("/home");
       }
     } catch (err) {
-      setError("Failed to verify OTP. Please try again.");
-      console.error("Verify OTP Error:", err);
+      setServerError("Failed to verify OTP. Please try again.");
     } finally {
-      setIsLoading(false);
+      setIsSubmitting(false);
     }
   };
 
-  const handleResendOtp = async () => {
-    if (cooldown > 0 || isLoading) return;
-    setError("");
-    setInfoMessage("");
-    setIsLoading(true);
+  // Step 2: Resend OTP
+  const onResendOtpClick = async () => {
+    if (cooldown > 0 || isSubmitting) return;
+    setServerError("");
+    setServerInfo("");
+    setIsSubmitting(true);
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/v1/auth/resend-otp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+        body: JSON.stringify({ email: registeredEmail }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        setError(data.message || data.error || "Failed to resend OTP");
+        setServerError(data.message || data.error || "Failed to resend OTP");
       } else {
         setCooldown(data.resendCooldownSeconds || 60);
         setTtlSeconds(300);
-        setInfoMessage("A fresh 6-digit OTP has been sent.");
+        setOtpValues(["", "", "", "", "", ""]);
+        setServerInfo("A fresh 6-digit OTP code has been sent.");
+        otpInputsRef.current[0]?.focus();
       }
     } catch (err) {
-      setError("Failed to resend OTP. Please try again.");
-      console.error("Resend OTP Error:", err);
+      setServerError("Failed to resend code. Please try again.");
     } finally {
-      setIsLoading(false);
+      setIsSubmitting(false);
     }
   };
+
+  // Circular progress calculation for cooldown timer (radius 18, circumference ~113.1)
+  const circleCircumference = 2 * Math.PI * 18;
+  const cooldownOffset =
+    circleCircumference - (cooldown / 60) * circleCircumference;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-200 p-4">
       <div className="bg-white p-8 sm:p-10 rounded-xl shadow-2xl w-full max-w-lg transform transition-all duration-300">
+        {/* Header Logo */}
         <div className="flex justify-center mb-6">
           <img
             src="/logo.svg"
@@ -172,179 +264,361 @@ const SignUp = () => {
           />
         </div>
 
-        {!isOtpStep ? (
+        {step === 1 ? (
           <>
             <h2 className="text-3xl font-extrabold text-center text-gray-900 mb-2 tracking-tight">
               Create an Account
             </h2>
             <p className="text-center text-gray-500 text-sm mb-6">
-              Enter your details to register on KaushalAI
+              Step 1 of 2: Primary Account Credentials
             </p>
 
-            <form className="flex flex-col gap-4" onSubmit={handleSignupSubmit}>
+            <form
+              className="flex flex-col gap-4"
+              onSubmit={handleSubmit(onSignupSubmit)}
+              noValidate
+            >
+              {/* Full Name Field */}
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">
+                <label
+                  htmlFor="name-input"
+                  className="block text-sm font-semibold text-gray-700 mb-1"
+                >
                   Full Name *
                 </label>
                 <input
+                  id="name-input"
                   type="text"
                   placeholder="e.g. Aditi Sharma"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full p-3.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-500 bg-gray-50 text-gray-800 text-base"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">
-                  Email Address *
-                </label>
-                <input
-                  type="email"
-                  placeholder="name@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full p-3.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-500 bg-gray-50 text-gray-800 text-base"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">
-                  Username (optional)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. aditi_dev"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  className="w-full p-3.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-500 bg-gray-50 text-gray-800 text-base"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">
-                  Password *
-                </label>
-                <input
-                  type="password"
-                  placeholder="Min. 8 chars with Aa, 1-9, and !@#$"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full p-3.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-500 bg-gray-50 text-gray-800 text-base"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">
-                  Confirm Password *
-                </label>
-                <input
-                  type="password"
-                  placeholder="Re-enter your password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  {...register("name")}
                   className={`w-full p-3.5 border rounded-lg focus:outline-none focus:ring-2 bg-gray-50 text-gray-800 text-base transition-all ${
-                    passwordMismatch
-                      ? "border-red-500 focus:ring-red-300"
+                    errors.name
+                      ? "border-red-400 focus:ring-red-200"
                       : "border-gray-200 focus:ring-blue-400 focus:border-blue-500"
                   }`}
-                  required
+                  aria-invalid={errors.name ? "true" : "false"}
+                  aria-describedby={errors.name ? "name-error" : undefined}
                 />
-                {passwordMismatch && (
-                  <p className="text-red-500 text-xs mt-1 font-medium">
-                    Passwords do not match
+                {errors.name && (
+                  <p
+                    id="name-error"
+                    role="alert"
+                    className="text-red-500 text-xs mt-1 font-medium"
+                  >
+                    {errors.name.message}
                   </p>
                 )}
               </div>
 
+              {/* Email Address Field */}
+              <div>
+                <label
+                  htmlFor="email-input"
+                  className="block text-sm font-semibold text-gray-700 mb-1"
+                >
+                  Email Address *
+                </label>
+                <input
+                  id="email-input"
+                  type="email"
+                  placeholder="name@example.com"
+                  {...register("email")}
+                  className={`w-full p-3.5 border rounded-lg focus:outline-none focus:ring-2 bg-gray-50 text-gray-800 text-base transition-all ${
+                    errors.email
+                      ? "border-red-400 focus:ring-red-200"
+                      : "border-gray-200 focus:ring-blue-400 focus:border-blue-500"
+                  }`}
+                  aria-invalid={errors.email ? "true" : "false"}
+                  aria-describedby={errors.email ? "email-error" : undefined}
+                />
+                {errors.email && (
+                  <p
+                    id="email-error"
+                    role="alert"
+                    className="text-red-500 text-xs mt-1 font-medium"
+                  >
+                    {errors.email.message}
+                  </p>
+                )}
+              </div>
+
+              {/* Password Field with Strength Meter */}
+              <div>
+                <label
+                  htmlFor="password-input"
+                  className="block text-sm font-semibold text-gray-700 mb-1"
+                >
+                  Password *
+                </label>
+                <input
+                  id="password-input"
+                  type="password"
+                  placeholder="Min. 8 chars with uppercase, lowercase, number, & symbol"
+                  {...register("password")}
+                  className={`w-full p-3.5 border rounded-lg focus:outline-none focus:ring-2 bg-gray-50 text-gray-800 text-base transition-all ${
+                    errors.password
+                      ? "border-red-400 focus:ring-red-200"
+                      : "border-gray-200 focus:ring-blue-400 focus:border-blue-500"
+                  }`}
+                  aria-invalid={errors.password ? "true" : "false"}
+                  aria-describedby="password-strength"
+                />
+
+                {/* Password Strength Meter */}
+                {watchedPassword && (
+                  <div id="password-strength" className="mt-2" aria-live="polite">
+                    <div className="flex justify-between items-center text-xs mb-1">
+                      <span className="text-gray-500 font-medium">Strength:</span>
+                      <span className={`font-semibold ${passwordStrength.text}`}>
+                        {passwordStrength.label}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5 h-1.5 w-full">
+                      <div
+                        className={`rounded-full transition-all duration-300 ${
+                          passwordStrength.score >= 1
+                            ? passwordStrength.color
+                            : "bg-gray-200"
+                        }`}
+                      />
+                      <div
+                        className={`rounded-full transition-all duration-300 ${
+                          passwordStrength.score >= 2
+                            ? passwordStrength.color
+                            : "bg-gray-200"
+                        }`}
+                      />
+                      <div
+                        className={`rounded-full transition-all duration-300 ${
+                          passwordStrength.score >= 3
+                            ? passwordStrength.color
+                            : "bg-gray-200"
+                        }`}
+                      />
+                      <div
+                        className={`rounded-full transition-all duration-300 ${
+                          passwordStrength.score >= 4
+                            ? passwordStrength.color
+                            : "bg-gray-200"
+                        }`}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {errors.password && (
+                  <p role="alert" className="text-red-500 text-xs mt-1 font-medium">
+                    {errors.password.message}
+                  </p>
+                )}
+              </div>
+
+              {/* Confirm Password Field with Real-Time Inline Match Indicator */}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label
+                    htmlFor="confirm-password-input"
+                    className="block text-sm font-semibold text-gray-700"
+                  >
+                    Confirm Password *
+                  </label>
+                  {isConfirmFilled && (
+                    <span
+                      aria-live="polite"
+                      className={`text-xs font-semibold flex items-center gap-1 ${
+                        isPasswordMatching ? "text-green-600" : "text-red-600"
+                      }`}
+                    >
+                      {isPasswordMatching ? (
+                        <>
+                          <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 20 20">
+                            <path
+                              fillRule="evenodd"
+                              d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                          Passwords match
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 20 20">
+                            <path
+                              fillRule="evenodd"
+                              d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                          Passwords do not match
+                        </>
+                      )}
+                    </span>
+                  )}
+                </div>
+
+                <input
+                  id="confirm-password-input"
+                  type="password"
+                  placeholder="Re-enter your password"
+                  {...register("confirmPassword")}
+                  className={`w-full p-3.5 border rounded-lg focus:outline-none focus:ring-2 bg-gray-50 text-gray-800 text-base transition-all ${
+                    isPasswordMismatched
+                      ? "border-red-400 focus:ring-red-200"
+                      : isPasswordMatching
+                      ? "border-green-400 focus:ring-green-200"
+                      : "border-gray-200 focus:ring-blue-400 focus:border-blue-500"
+                  }`}
+                  aria-invalid={isPasswordMismatched ? "true" : "false"}
+                />
+
+                {errors.confirmPassword && (
+                  <p role="alert" className="text-red-500 text-xs mt-1 font-medium">
+                    {errors.confirmPassword.message}
+                  </p>
+                )}
+              </div>
+
+              {/* Submit Button */}
               <button
                 type="submit"
-                disabled={isLoading || passwordMismatch}
-                className="w-full bg-blue-600 text-white py-3.5 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 font-semibold text-lg transition-all mt-2 disabled:opacity-50"
+                disabled={isSubmitting || isPasswordMismatched}
+                aria-busy={isSubmitting}
+                className="w-full bg-blue-600 text-white py-3.5 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 font-semibold text-lg transition-all mt-3 disabled:opacity-50"
               >
-                {isLoading ? "Validating..." : "Sign Up & Verify Email"}
+                {isSubmitting ? "Validating & Sending OTP..." : "Continue to Verification"}
               </button>
             </form>
           </>
         ) : (
           <div>
             <h2 className="text-2xl font-extrabold text-center text-gray-900 mb-2 tracking-tight">
-              Verify Email Address
+              Verify Your Email
             </h2>
             <p className="text-center text-gray-600 text-sm mb-6">
-              A 6-digit numeric OTP was sent to{" "}
-              <span className="font-semibold text-gray-800">{email}</span>. Code expires in{" "}
+              Enter the 6-digit verification code sent to{" "}
+              <span className="font-semibold text-gray-800">{registeredEmail}</span>. Code expires
+              in{" "}
               <span className="font-semibold text-blue-600">
-                {Math.floor(ttlSeconds / 60)}:
-                {String(ttlSeconds % 60).padStart(2, "0")}
-              </span>.
+                {Math.floor(ttlSeconds / 60)}:{String(ttlSeconds % 60).padStart(2, "0")}
+              </span>
             </p>
 
-            <form className="flex flex-col gap-4" onSubmit={handleVerifyOtp}>
+            <form className="flex flex-col gap-5" onSubmit={onVerifyOtpSubmit}>
+              {/* 6-Digit Segmented OTP Input Box */}
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1 text-center">
-                  6-Digit OTP Code
+                <label className="block text-sm font-semibold text-gray-700 mb-2 text-center">
+                  6-Digit Verification Code
                 </label>
-                <input
-                  type="text"
-                  maxLength="6"
-                  placeholder="123456"
-                  value={otp}
-                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
-                  className="w-full p-4 border border-gray-300 rounded-lg text-center tracking-widest text-2xl font-bold focus:outline-none focus:ring-2 focus:ring-blue-400 bg-gray-50"
-                  required
-                />
+                <div
+                  className="flex justify-center gap-2 sm:gap-3"
+                  onPaste={handleOtpPaste}
+                >
+                  {otpValues.map((val, idx) => (
+                    <input
+                      key={idx}
+                      ref={(el) => (otpInputsRef.current[idx] = el)}
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={1}
+                      value={val}
+                      onChange={(e) => handleOtpChange(idx, e.target.value)}
+                      onKeyDown={(e) => handleOtpKeyDown(idx, e)}
+                      className="w-11 h-14 sm:w-12 sm:h-14 text-center text-2xl font-bold border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50 text-gray-900 transition-all"
+                      aria-label={`Digit ${idx + 1} of verification code`}
+                    />
+                  ))}
+                </div>
               </div>
 
+              {/* Verify Submit Button */}
               <button
                 type="submit"
-                disabled={isLoading || otp.length !== 6}
-                className="w-full bg-blue-600 text-white py-3.5 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 font-semibold text-lg transition-all mt-2 disabled:opacity-50"
+                disabled={isSubmitting || otpValues.join("").length !== 6}
+                aria-busy={isSubmitting}
+                className="w-full bg-blue-600 text-white py-3.5 rounded-lg hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 font-semibold text-lg transition-all disabled:opacity-50"
               >
-                {isLoading ? "Verifying..." : "Verify & Activate Account"}
+                {isSubmitting ? "Verifying Code..." : "Verify & Activate Account"}
               </button>
             </form>
 
-            <div className="flex items-center justify-between mt-6 text-sm">
+            {/* Circular Countdown & Resend Section */}
+            <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-100">
               <button
                 type="button"
-                onClick={() => setIsOtpStep(false)}
-                className="text-gray-500 hover:text-gray-700 underline"
+                onClick={() => setStep(1)}
+                className="text-sm text-gray-500 hover:text-gray-700 underline"
               >
                 Change details
               </button>
 
-              <button
-                type="button"
-                onClick={handleResendOtp}
-                disabled={cooldown > 0 || isLoading}
-                className={`font-semibold ${
-                  cooldown > 0
-                    ? "text-gray-400 cursor-not-allowed"
-                    : "text-blue-600 hover:text-blue-700"
-                }`}
-              >
-                {cooldown > 0 ? `Resend OTP in ${cooldown}s` : "Resend OTP"}
-              </button>
+              <div className="flex items-center gap-2">
+                {/* Circular 60-Second Countdown Graphic */}
+                <div className="relative w-10 h-10 flex items-center justify-center">
+                  <svg className="w-10 h-10 transform -rotate-90">
+                    <circle
+                      cx="20"
+                      cy="20"
+                      r="16"
+                      stroke="#E5E7EB"
+                      strokeWidth="3"
+                      fill="transparent"
+                    />
+                    <circle
+                      cx="20"
+                      cy="20"
+                      r="16"
+                      stroke={cooldown > 0 ? "#2563EB" : "#9CA3AF"}
+                      strokeWidth="3"
+                      fill="transparent"
+                      strokeDasharray={circleCircumference}
+                      strokeDashoffset={cooldownOffset}
+                      strokeLinecap="round"
+                      className="transition-all duration-1000 ease-linear"
+                    />
+                  </svg>
+                  <span className="absolute text-xs font-semibold text-gray-700">
+                    {cooldown}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={onResendOtpClick}
+                  disabled={cooldown > 0 || isSubmitting}
+                  className={`text-sm font-semibold transition-all ${
+                    cooldown > 0
+                      ? "text-gray-400 cursor-not-allowed"
+                      : "text-blue-600 hover:text-blue-800 underline"
+                  }`}
+                >
+                  Resend OTP
+                </button>
+              </div>
             </div>
           </div>
         )}
 
-        {error && (
-          <p className="text-red-600 text-sm text-center mt-4 font-medium bg-red-50 p-2.5 rounded-lg border border-red-200">
-            {error}
-          </p>
+        {/* Global Error & Info Announcements */}
+        {serverError && (
+          <div
+            role="alert"
+            aria-live="assertive"
+            className="text-red-600 text-sm text-center mt-4 font-medium bg-red-50 p-3 rounded-lg border border-red-200"
+          >
+            {serverError}
+          </div>
         )}
 
-        {infoMessage && (
-          <p className="text-green-700 text-sm text-center mt-4 font-medium bg-green-50 p-2.5 rounded-lg border border-green-200">
-            {infoMessage}
-          </p>
+        {serverInfo && (
+          <div
+            aria-live="polite"
+            className="text-green-700 text-sm text-center mt-4 font-medium bg-green-50 p-3 rounded-lg border border-green-200"
+          >
+            {serverInfo}
+          </div>
         )}
 
+        {/* Back to Login Link */}
         <div className="mt-6 text-center text-sm text-gray-500">
           Already have an account?{" "}
           <Link to="/login" className="text-blue-600 font-semibold hover:underline">
