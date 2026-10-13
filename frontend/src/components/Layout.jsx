@@ -90,7 +90,7 @@ const Layout = () => {
           </div>
 
           <p className="text-sm text-gray-500 text-center sm:text-right">
-            © {new Date().getFullYear()} KaushalAI. All rights reserved.
+            &copy; {new Date().getFullYear()} KaushalAI. All rights reserved.
           </p>
         </div>
       </footer>

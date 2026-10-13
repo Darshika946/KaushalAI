@@ -1,5 +1,5 @@
 .student-page-container {
-  font-family: Arial, sans-serif;
+  font-family: inherit;
   background-color: #e0f7fa;  /* Light blue background color */
   padding: 20px;
   max-width: 500px;
