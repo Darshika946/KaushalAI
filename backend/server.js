@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { connectDB, isDBConnected } from "./lib/db.js";
 import authRoute from "./routes/auth.route.js";
 import aiRoute from "./routes/ai.route.js";
+import challengesRoute from "./routes/challenges.route.js";
 
 dotenv.config();
 
@@ -86,6 +87,7 @@ app.use("/api/v1/auth", async (req, res, next) => {
 // API routes
 app.use("/api/v1/auth", authRoute);
 app.use("/api/v1/ai", aiRoute);
+app.use("/api/v1/challenges", challengesRoute);
 app.use("/", aiRoute); // Root aliases for /generate-questions, /evaluate-answer, /chat, /generate-resume
 
 // Health check endpoint
