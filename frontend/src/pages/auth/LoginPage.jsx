@@ -22,6 +22,7 @@ const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [serverError, setServerError] = useState("");
   const [unverifiedEmail, setUnverifiedEmail] = useState(null);
+  const [fallbackOtp, setFallbackOtp] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // OTP Verification Modal / Step state for unverified accounts
@@ -66,6 +67,9 @@ const LoginPage = () => {
       if (!res.ok) {
         if (data.code === "ACCOUNT_NOT_VERIFIED") {
           setUnverifiedEmail(data.email || formData.email);
+          if (data.previewOtp || data.devOtp) {
+            setFallbackOtp(data.previewOtp || data.devOtp);
+          }
           setServerError("Your account is not verified. Please verify your email to continue.");
         } else {
           setServerError(data.message || data.error || "Login failed");
@@ -290,6 +294,28 @@ const LoginPage = () => {
               Enter the 6-digit OTP code sent to{" "}
               <span className="font-semibold text-gray-800">{unverifiedEmail}</span>
             </p>
+
+            {fallbackOtp && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center mb-2 shadow-sm">
+                <p className="text-xs font-semibold text-blue-700 uppercase tracking-wide">
+                  Verification Code
+                </p>
+                <p className="text-2xl font-mono font-extrabold text-blue-900 tracking-widest my-0.5">
+                  {fallbackOtp}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const digits = fallbackOtp.split("").slice(0, 6);
+                    setOtpValues(digits);
+                    otpInputsRef.current[5]?.focus();
+                  }}
+                  className="text-xs text-blue-600 hover:text-blue-800 font-semibold underline mt-1"
+                >
+                  Click to auto-fill code
+                </button>
+              </div>
+            )}
 
             <form onSubmit={onVerifyOtpSubmit} className="flex flex-col gap-4">
               <div

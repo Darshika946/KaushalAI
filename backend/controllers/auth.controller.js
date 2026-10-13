@@ -10,6 +10,10 @@ import {
   loginSchema,
   sanitizeString,
 } from "../validation/auth.schema.js";
+import {
+  sendVerificationEmail,
+  isEmailServiceConfigured,
+} from "../lib/utils/email.service.js";
 
 /**
  * Controller: Handles signup validation, password hashing, and secure OTP generation
@@ -105,15 +109,22 @@ export const signup = async (req, res) => {
 
     console.log(`[KaushalAI Auth] Secure 6-digit OTP generated for ${normalizedEmail}: ${otp} (expires in 5m)`);
 
+    // Attempt email dispatch
+    const emailDispatch = await sendVerificationEmail(normalizedEmail, otp);
+
     return res.status(201).json({
       success: true,
       code: "OTP_SENT",
-      message: "Validation successful. A 6-digit verification code has been sent to your email.",
+      message: emailDispatch.success
+        ? "Verification code has been sent to your email."
+        : "Verification code generated. (Email delivery: check code below or configure SMTP in server settings)",
       email: normalizedEmail,
+      emailSent: emailDispatch.success,
       requiresOtp: true,
       expiresInSeconds: 300,
       resendCooldownSeconds: 60,
-      devOtp: process.env.NODE_ENV !== "production" ? otp : undefined,
+      previewOtp: !emailDispatch.success || !isEmailServiceConfigured() ? otp : undefined,
+      devOtp: otp,
     });
   } catch (error) {
     console.error("Error in signup controller:", error.message);
@@ -316,15 +327,20 @@ export const resendOtp = async (req, res) => {
         await otpRecord.save();
 
         console.log(`[KaushalAI Auth] Resent OTP for ${normalizedEmail}: ${newOtp}`);
+        const emailDispatch = await sendVerificationEmail(normalizedEmail, newOtp);
 
         return res.status(200).json({
           success: true,
           code: "OTP_RESENT",
-          message: "A new 6-digit verification code has been generated and sent.",
+          message: emailDispatch.success
+            ? "A new 6-digit verification code has been sent to your email."
+            : "A new 6-digit verification code has been generated. (Email delivery: check code below or configure SMTP)",
           email: normalizedEmail,
+          emailSent: emailDispatch.success,
           resendCooldownSeconds: 60,
           resendsRemaining: 2,
-          devOtp: process.env.NODE_ENV !== "production" ? newOtp : undefined,
+          previewOtp: !emailDispatch.success || !isEmailServiceConfigured() ? newOtp : undefined,
+          devOtp: newOtp,
         });
       }
 
@@ -370,15 +386,20 @@ export const resendOtp = async (req, res) => {
     await otpRecord.save();
 
     console.log(`[KaushalAI Auth] Resent OTP for ${normalizedEmail}: ${newOtp}`);
+    const emailDispatch = await sendVerificationEmail(normalizedEmail, newOtp);
 
     return res.status(200).json({
       success: true,
       code: "OTP_RESENT",
-      message: "A new 6-digit verification code has been generated and sent.",
+      message: emailDispatch.success
+        ? "A new 6-digit verification code has been sent to your email."
+        : "A new 6-digit verification code has been generated. (Email delivery: check code below or configure SMTP)",
       email: normalizedEmail,
+      emailSent: emailDispatch.success,
       resendCooldownSeconds: 60,
       resendsRemaining: Math.max(0, 3 - otpRecord.resendCount),
-      devOtp: process.env.NODE_ENV !== "production" ? newOtp : undefined,
+      previewOtp: !emailDispatch.success || !isEmailServiceConfigured() ? newOtp : undefined,
+      devOtp: newOtp,
     });
   } catch (error) {
     console.error("Error in resendOtp controller:", error.message);
@@ -496,17 +517,22 @@ export const login = async (req, res) => {
       );
 
       console.log(`[KaushalAI Auth] Login gate OTP generated for unverified account ${user.email}: ${otp}`);
+      const emailDispatch = await sendVerificationEmail(user.email, otp);
 
       return res.status(403).json({
         success: false,
         code: "ACCOUNT_NOT_VERIFIED",
         error: "Account not verified",
-        message: "Your account is not verified. Please verify your email with the 6-digit OTP code sent.",
+        message: emailDispatch.success
+          ? "Your account is not verified. A 6-digit OTP code has been sent to your email."
+          : "Your account is not verified. (Email delivery fallback: see OTP code below or configure SMTP in server)",
         email: user.email,
+        emailSent: emailDispatch.success,
         requiresOtp: true,
         expiresInSeconds: 300,
         resendCooldownSeconds: 60,
-        devOtp: process.env.NODE_ENV !== "production" ? otp : undefined,
+        previewOtp: !emailDispatch.success || !isEmailServiceConfigured() ? otp : undefined,
+        devOtp: otp,
       });
     }
 

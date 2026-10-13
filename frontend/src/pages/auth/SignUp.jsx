@@ -38,6 +38,7 @@ const SignUp = () => {
   const [ttlSeconds, setTtlSeconds] = useState(300);
   const [serverError, setServerError] = useState("");
   const [serverInfo, setServerInfo] = useState("");
+  const [fallbackOtp, setFallbackOtp] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const otpInputsRef = useRef([]);
@@ -128,6 +129,9 @@ const SignUp = () => {
         setRegisteredEmail(formData.email.trim().toLowerCase());
         setCooldown(data.resendCooldownSeconds || 60);
         setTtlSeconds(data.expiresInSeconds || 300);
+        if (data.previewOtp || data.devOtp) {
+          setFallbackOtp(data.previewOtp || data.devOtp);
+        }
         setServerInfo(data.message || "A 6-digit OTP code has been sent to your email.");
         setStep(2);
       }
@@ -237,7 +241,10 @@ const SignUp = () => {
         setCooldown(data.resendCooldownSeconds || 60);
         setTtlSeconds(300);
         setOtpValues(["", "", "", "", "", ""]);
-        setServerInfo("A fresh 6-digit OTP code has been sent.");
+        if (data.previewOtp || data.devOtp) {
+          setFallbackOtp(data.previewOtp || data.devOtp);
+        }
+        setServerInfo(data.message || "A fresh 6-digit OTP code has been sent.");
         otpInputsRef.current[0]?.focus();
       }
     } catch (err) {
@@ -494,7 +501,7 @@ const SignUp = () => {
             <h2 className="text-2xl font-extrabold text-center text-gray-900 mb-2 tracking-tight">
               Verify Your Email
             </h2>
-            <p className="text-center text-gray-600 text-sm mb-6">
+            <p className="text-center text-gray-600 text-sm mb-4">
               Enter the 6-digit verification code sent to{" "}
               <span className="font-semibold text-gray-800">{registeredEmail}</span>. Code expires
               in{" "}
@@ -502,6 +509,28 @@ const SignUp = () => {
                 {Math.floor(ttlSeconds / 60)}:{String(ttlSeconds % 60).padStart(2, "0")}
               </span>
             </p>
+
+            {fallbackOtp && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3.5 text-center mb-5 shadow-sm">
+                <p className="text-xs font-semibold text-blue-700 uppercase tracking-wider mb-0.5">
+                  Verification Code
+                </p>
+                <p className="text-3xl font-mono font-extrabold text-blue-900 tracking-widest my-1">
+                  {fallbackOtp}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const digits = fallbackOtp.split("").slice(0, 6);
+                    setOtpValues(digits);
+                    otpInputsRef.current[5]?.focus();
+                  }}
+                  className="text-xs text-blue-600 hover:text-blue-800 font-semibold underline mt-1"
+                >
+                  Click to auto-fill code
+                </button>
+              </div>
+            )}
 
             <form className="flex flex-col gap-5" onSubmit={onVerifyOtpSubmit}>
               {/* 6-Digit Segmented OTP Input Box */}
