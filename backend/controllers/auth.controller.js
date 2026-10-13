@@ -16,7 +16,7 @@ import {
 } from "../lib/utils/email.service.js";
 
 /**
- * Controller: Handles signup validation, password hashing, and secure OTP generation
+ * Controller: Handles signup validation, password hashing, and immediate account creation (No OTP required)
  */
 export const signup = async (req, res) => {
   try {
@@ -52,9 +52,9 @@ export const signup = async (req, res) => {
     const normalizedEmail = email.trim().toLowerCase();
     const sanitizedName = sanitizeString(name);
 
-    // Check if a verified account already exists with this email
+    // Check if an account already exists with this email
     const existingUser = await User.findOne({ email: normalizedEmail });
-    if (existingUser && (existingUser.is_verified === true || existingUser.is_verified === undefined)) {
+    if (existingUser) {
       return res.status(409).json({
         success: false,
         code: "EMAIL_ALREADY_EXISTS",
@@ -69,62 +69,45 @@ export const signup = async (req, res) => {
         "_" +
         Math.floor(1000 + Math.random() * 9000);
 
+    const existingUsername = await User.findOne({ username: derivedUsername });
+    const finalUsername = existingUsername
+      ? `${derivedUsername}_${Date.now().toString().slice(-4)}`
+      : derivedUsername;
+
     // Hash password with bcrypt cost factor 10
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Generate secure 6-digit OTP with 5-minute TTL
-    const otp = generateSecureOtp();
-    const otpHash = hashOtp(otp);
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + 5 * 60 * 1000); // 5 minutes TTL
-    const resendAvailableAt = new Date(now.getTime() + 60 * 1000); // 60 seconds cooldown
+    // Create user directly (No OTP required)
+    const newUser = new User({
+      name: sanitizedName,
+      username: finalUsername,
+      email: normalizedEmail,
+      password: hashedPassword,
+      is_verified: true,
+      failedLoginAttempts: 0,
+      lockUntil: null,
+    });
+    await newUser.save();
 
-    // Persist OTP and registration data in OtpVerification
-    await OtpVerification.findOneAndUpdate(
-      { email: normalizedEmail },
-      {
-        email: normalizedEmail,
-        otpHash,
-        expiresAt,
-        resendAvailableAt,
-        attemptsLeft: 3,
-        resendCount: 0,
-        tempUserData: {
-          name: sanitizedName,
-          username: derivedUsername,
-          hashedPassword,
-        },
-      },
-      { upsert: true, new: true }
-    );
-
-    // If an unverified user document already exists, sync registration details
-    if (existingUser && existingUser.is_verified === false) {
-      existingUser.name = sanitizedName;
-      existingUser.username = derivedUsername;
-      existingUser.password = hashedPassword;
-      await existingUser.save();
-    }
-
-    console.log(`[KaushalAI Auth] Secure 6-digit OTP generated for ${normalizedEmail}: ${otp} (expires in 5m)`);
-
-    // Attempt email dispatch
-    const emailDispatch = await sendVerificationEmail(normalizedEmail, otp);
+    // Issue secure Access and Refresh tokens and set HTTP-only cookies
+    const tokens = generateTokensAndSetCookies(newUser._id, res);
+    newUser.refreshToken = tokens.refreshToken;
+    await newUser.save();
 
     return res.status(201).json({
       success: true,
-      code: "OTP_SENT",
-      message: emailDispatch.success
-        ? "Verification code has been sent to your email."
-        : "Verification code generated. (Email delivery: check code below or configure SMTP in server settings)",
-      email: normalizedEmail,
-      emailSent: emailDispatch.success,
-      requiresOtp: true,
-      expiresInSeconds: 300,
-      resendCooldownSeconds: 60,
-      previewOtp: !emailDispatch.success || !isEmailServiceConfigured() ? otp : undefined,
-      devOtp: otp,
+      code: "ACCOUNT_CREATED",
+      message: "Account created successfully.",
+      user: {
+        _id: newUser._id,
+        name: newUser.name,
+        username: newUser.username,
+        email: newUser.email,
+        is_verified: true,
+      },
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
     });
   } catch (error) {
     console.error("Error in signup controller:", error.message);
@@ -492,48 +475,10 @@ export const login = async (req, res) => {
       await user.save();
     }
 
-    // Verification gate: block unverified users and trigger OTP verification
+    // Ensure user is marked verified
     if (user.is_verified === false) {
-      const otp = generateSecureOtp();
-      const otpHash = hashOtp(otp);
-      const now = new Date();
-
-      await OtpVerification.findOneAndUpdate(
-        { email: user.email },
-        {
-          email: user.email,
-          otpHash,
-          expiresAt: new Date(now.getTime() + 5 * 60 * 1000),
-          resendAvailableAt: new Date(now.getTime() + 60 * 1000),
-          attemptsLeft: 3,
-          resendCount: 0,
-          tempUserData: {
-            name: user.name,
-            username: user.username,
-            hashedPassword: user.password,
-          },
-        },
-        { upsert: true, new: true }
-      );
-
-      console.log(`[KaushalAI Auth] Login gate OTP generated for unverified account ${user.email}: ${otp}`);
-      const emailDispatch = await sendVerificationEmail(user.email, otp);
-
-      return res.status(403).json({
-        success: false,
-        code: "ACCOUNT_NOT_VERIFIED",
-        error: "Account not verified",
-        message: emailDispatch.success
-          ? "Your account is not verified. A 6-digit OTP code has been sent to your email."
-          : "Your account is not verified. (Email delivery fallback: see OTP code below or configure SMTP in server)",
-        email: user.email,
-        emailSent: emailDispatch.success,
-        requiresOtp: true,
-        expiresInSeconds: 300,
-        resendCooldownSeconds: 60,
-        previewOtp: !emailDispatch.success || !isEmailServiceConfigured() ? otp : undefined,
-        devOtp: otp,
-      });
+      user.is_verified = true;
+      await user.save();
     }
 
     // Issue secure Access and Refresh tokens
