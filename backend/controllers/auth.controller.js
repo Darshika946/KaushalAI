@@ -1,108 +1,585 @@
 import bcrypt from "bcryptjs";
-import generateTokenAndSetCookie from "../lib/utils/generateTokenAndSetCookie.js";
+import { generateTokensAndSetCookies } from "../lib/utils/generateTokenAndSetCookie.js";
+import { generateSecureOtp, hashOtp, verifyOtpHash } from "../lib/utils/otp.util.js";
 import User from "../models/user.model.js";
+import OtpVerification from "../models/otp.model.js";
+import {
+  signupSchema,
+  verifyOtpSchema,
+  resendOtpSchema,
+  loginSchema,
+  sanitizeString,
+} from "../validation/auth.schema.js";
 
+/**
+ * Controller: Handles signup validation, password hashing, and secure OTP generation
+ */
 export const signup = async (req, res) => {
   try {
-    const { username, email, password, name } = req.body;
+    const parseResult = signupSchema.safeParse(req.body);
 
-    console.log("Signup request body:", req.body); // Debug
+    if (!parseResult.success) {
+      const issues = parseResult.error.issues;
+      const isMismatch = issues.some(
+        (issue) =>
+          issue.path.includes("confirmPassword") ||
+          issue.message === "Passwords do not match"
+      );
 
-    // Field validation
-    if (!username || !email || !password || !name) {
-      return res.status(400).json({ error: "All fields are required" });
+      if (isMismatch) {
+        return res.status(400).json({
+          success: false,
+          code: "PASSWORDS_DO_NOT_MATCH",
+          error: "Passwords do not match",
+          message: "Confirm password does not match password",
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        code: "VALIDATION_ERROR",
+        error: issues[0].message,
+        message: issues[0].message,
+        details: issues.map((i) => ({ field: i.path.join("."), message: i.message })),
+      });
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: "Invalid email format" });
+    const { name, email, password, username } = parseResult.data;
+    const normalizedEmail = email.trim().toLowerCase();
+    const sanitizedName = sanitizeString(name);
+
+    // Check if a verified account already exists with this email
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser && (existingUser.is_verified === true || existingUser.is_verified === undefined)) {
+      return res.status(409).json({
+        success: false,
+        code: "EMAIL_ALREADY_EXISTS",
+        error: "Email already exists",
+        message: "An account with this email address already exists. Please log in.",
+      });
     }
 
-    const existingUser = await User.findOne({ username });
-    if (existingUser) {
-      return res.status(400).json({ error: "Username already exists" });
-    }
+    const derivedUsername =
+      username ||
+      normalizedEmail.split("@")[0].replace(/[^a-zA-Z0-9_]/g, "") +
+        "_" +
+        Math.floor(1000 + Math.random() * 9000);
 
-    const existingEmail = await User.findOne({ email });
-    if (existingEmail) {
-      return res.status(400).json({ error: "Email already exists" });
-    }
-
+    // Hash password with bcrypt cost factor 10
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    const user = new User({
-      username,
-      password: hashedPassword,
-      email,
-      name,
-    });
+    // Generate secure 6-digit OTP with 5-minute TTL
+    const otp = generateSecureOtp();
+    const otpHash = hashOtp(otp);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 5 * 60 * 1000); // 5 minutes TTL
+    const resendAvailableAt = new Date(now.getTime() + 60 * 1000); // 60 seconds cooldown
 
-    await user.save();
-    generateTokenAndSetCookie(user._id, res);
+    // Persist OTP and registration data in OtpVerification
+    await OtpVerification.findOneAndUpdate(
+      { email: normalizedEmail },
+      {
+        email: normalizedEmail,
+        otpHash,
+        expiresAt,
+        resendAvailableAt,
+        attemptsLeft: 3,
+        resendCount: 0,
+        tempUserData: {
+          name: sanitizedName,
+          username: derivedUsername,
+          hashedPassword,
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    // If an unverified user document already exists, sync registration details
+    if (existingUser && existingUser.is_verified === false) {
+      existingUser.name = sanitizedName;
+      existingUser.username = derivedUsername;
+      existingUser.password = hashedPassword;
+      await existingUser.save();
+    }
+
+    console.log(`[KaushalAI Auth] Secure 6-digit OTP generated for ${normalizedEmail}: ${otp} (expires in 5m)`);
 
     return res.status(201).json({
       success: true,
-      _id: user._id,
-      username: user.username,
-      name: user.name,
-      email: user.email,
+      code: "OTP_SENT",
+      message: "Validation successful. A 6-digit verification code has been sent to your email.",
+      email: normalizedEmail,
+      requiresOtp: true,
+      expiresInSeconds: 300,
+      resendCooldownSeconds: 60,
+      devOtp: process.env.NODE_ENV !== "production" ? otp : undefined,
     });
   } catch (error) {
-    console.error(`Error in signup controller: ${error.message}`);
-    return res.status(500).json({ error: error.message || "Internal server error" });
+    console.error("Error in signup controller:", error.message);
+    return res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      error: error.message || "Internal server error",
+      message: "Failed to process registration request",
+    });
   }
 };
+
+/**
+ * Controller: Verifies the 6-digit numeric OTP and activates the user account
+ */
+export const verifyOtp = async (req, res) => {
+  try {
+    const parseResult = verifyOtpSchema.safeParse(req.body);
+
+    if (!parseResult.success) {
+      return res.status(400).json({
+        success: false,
+        code: "VALIDATION_ERROR",
+        error: parseResult.error.issues[0].message,
+        message: parseResult.error.issues[0].message,
+      });
+    }
+
+    const { email, otp } = parseResult.data;
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const otpRecord = await OtpVerification.findOne({ email: normalizedEmail });
+
+    if (!otpRecord) {
+      const existingUser = await User.findOne({ email: normalizedEmail });
+      if (existingUser && existingUser.is_verified) {
+        return res.status(400).json({
+          success: false,
+          code: "ACCOUNT_ALREADY_VERIFIED",
+          error: "Account already verified",
+          message: "This account has already been verified. Please log in.",
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        code: "OTP_EXPIRED",
+        error: "OTP expired or not found",
+        message: "Verification code has expired or does not exist. Please request a new code.",
+      });
+    }
+
+    // Check expiration
+    if (new Date() > otpRecord.expiresAt) {
+      await OtpVerification.deleteOne({ _id: otpRecord._id });
+      return res.status(400).json({
+        success: false,
+        code: "OTP_EXPIRED",
+        error: "OTP expired",
+        message: "The 6-digit OTP code has expired. Please request a new code.",
+      });
+    }
+
+    // Check retry limits (max 3 attempts)
+    if (otpRecord.attemptsLeft <= 0) {
+      return res.status(429).json({
+        success: false,
+        code: "TOO_MANY_REQUESTS",
+        error: "Attempts exceeded",
+        message: "Maximum OTP verification attempts exceeded. Please request a new code.",
+      });
+    }
+
+    // Constant-time HMAC hash verification
+    const isValid = verifyOtpHash(otp, otpRecord.otpHash);
+
+    if (!isValid) {
+      otpRecord.attemptsLeft = Math.max(0, otpRecord.attemptsLeft - 1);
+      await otpRecord.save();
+
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_OTP",
+        error: "Invalid OTP",
+        message: "The verification code entered is incorrect.",
+        attemptsRemaining: otpRecord.attemptsLeft,
+      });
+    }
+
+    // Persist verified user record
+    let user = await User.findOne({ email: normalizedEmail });
+
+    if (user) {
+      user.is_verified = true;
+      user.failedLoginAttempts = 0;
+      user.lockUntil = null;
+      if (otpRecord.tempUserData?.hashedPassword) {
+        user.password = otpRecord.tempUserData.hashedPassword;
+      }
+      if (otpRecord.tempUserData?.name) {
+        user.name = otpRecord.tempUserData.name;
+      }
+      await user.save();
+    } else {
+      user = new User({
+        name: otpRecord.tempUserData?.name || "KaushalAI User",
+        username: otpRecord.tempUserData?.username || normalizedEmail.split("@")[0],
+        email: normalizedEmail,
+        password: otpRecord.tempUserData?.hashedPassword,
+        is_verified: true,
+        failedLoginAttempts: 0,
+        lockUntil: null,
+      });
+      await user.save();
+    }
+
+    // Remove used OTP record
+    await OtpVerification.deleteOne({ _id: otpRecord._id });
+
+    // Issue secure Access and Refresh tokens
+    const tokens = generateTokensAndSetCookies(user._id, res);
+    user.refreshToken = tokens.refreshToken;
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      code: "ACCOUNT_VERIFIED",
+      message: "Account verified and activated successfully.",
+      user: {
+        _id: user._id,
+        username: user.username,
+        name: user.name,
+        email: user.email,
+        is_verified: true,
+      },
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+    });
+  } catch (error) {
+    console.error("Error in verifyOtp controller:", error.message);
+    return res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      error: error.message || "Internal server error",
+      message: "Failed to verify OTP code",
+    });
+  }
+};
+
+/**
+ * Controller: Resends a fresh 6-digit OTP respecting the 60s cooldown and 3-attempt limit
+ */
+export const resendOtp = async (req, res) => {
+  try {
+    const parseResult = resendOtpSchema.safeParse(req.body);
+
+    if (!parseResult.success) {
+      return res.status(400).json({
+        success: false,
+        code: "VALIDATION_ERROR",
+        error: parseResult.error.issues[0].message,
+        message: parseResult.error.issues[0].message,
+      });
+    }
+
+    const { email } = parseResult.data;
+    const normalizedEmail = email.trim().toLowerCase();
+
+    let otpRecord = await OtpVerification.findOne({ email: normalizedEmail });
+
+    if (!otpRecord) {
+      const existingUser = await User.findOne({ email: normalizedEmail });
+      if (existingUser && (existingUser.is_verified || existingUser.is_verified === undefined)) {
+        return res.status(400).json({
+          success: false,
+          code: "ACCOUNT_ALREADY_VERIFIED",
+          error: "Account already verified",
+          message: "This account is already verified. Please log in.",
+        });
+      }
+
+      if (existingUser && existingUser.is_verified === false) {
+        // Re-initialize OTP verification for registered unverified user
+        const newOtp = generateSecureOtp();
+        const otpHash = hashOtp(newOtp);
+        const now = new Date();
+        otpRecord = new OtpVerification({
+          email: normalizedEmail,
+          otpHash,
+          expiresAt: new Date(now.getTime() + 5 * 60 * 1000),
+          resendAvailableAt: new Date(now.getTime() + 60 * 1000),
+          attemptsLeft: 3,
+          resendCount: 1,
+          tempUserData: {
+            name: existingUser.name,
+            username: existingUser.username,
+            hashedPassword: existingUser.password,
+          },
+        });
+        await otpRecord.save();
+
+        console.log(`[KaushalAI Auth] Resent OTP for ${normalizedEmail}: ${newOtp}`);
+
+        return res.status(200).json({
+          success: true,
+          code: "OTP_RESENT",
+          message: "A new 6-digit verification code has been generated and sent.",
+          email: normalizedEmail,
+          resendCooldownSeconds: 60,
+          resendsRemaining: 2,
+          devOtp: process.env.NODE_ENV !== "production" ? newOtp : undefined,
+        });
+      }
+
+      return res.status(404).json({
+        success: false,
+        code: "USER_NOT_FOUND",
+        error: "User not found",
+        message: "No pending registration found for this email. Please sign up first.",
+      });
+    }
+
+    const now = new Date();
+
+    // Check 60-second cooldown timer
+    if (otpRecord.resendAvailableAt && now < otpRecord.resendAvailableAt) {
+      const retryAfterSeconds = Math.ceil((otpRecord.resendAvailableAt.getTime() - now.getTime()) / 1000);
+      return res.status(429).json({
+        success: false,
+        code: "TOO_MANY_REQUESTS",
+        error: "Cooldown active",
+        message: `Please wait ${retryAfterSeconds} seconds before requesting a new code.`,
+        retryAfterSeconds,
+      });
+    }
+
+    // Check 3 resend attempts limit
+    if (otpRecord.resendCount >= 3) {
+      return res.status(429).json({
+        success: false,
+        code: "TOO_MANY_REQUESTS",
+        error: "Resend limit reached",
+        message: "Maximum OTP resend attempts reached. Please restart registration.",
+      });
+    }
+
+    // Generate fresh OTP
+    const newOtp = generateSecureOtp();
+    otpRecord.otpHash = hashOtp(newOtp);
+    otpRecord.expiresAt = new Date(now.getTime() + 5 * 60 * 1000);
+    otpRecord.resendAvailableAt = new Date(now.getTime() + 60 * 1000);
+    otpRecord.attemptsLeft = 3;
+    otpRecord.resendCount += 1;
+    await otpRecord.save();
+
+    console.log(`[KaushalAI Auth] Resent OTP for ${normalizedEmail}: ${newOtp}`);
+
+    return res.status(200).json({
+      success: true,
+      code: "OTP_RESENT",
+      message: "A new 6-digit verification code has been generated and sent.",
+      email: normalizedEmail,
+      resendCooldownSeconds: 60,
+      resendsRemaining: Math.max(0, 3 - otpRecord.resendCount),
+      devOtp: process.env.NODE_ENV !== "production" ? newOtp : undefined,
+    });
+  } catch (error) {
+    console.error("Error in resendOtp controller:", error.message);
+    return res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      error: error.message || "Internal server error",
+      message: "Failed to resend verification code",
+    });
+  }
+};
+
+/**
+ * Controller: Handles user login with verification gating and anti-abuse brute-force lockout
+ */
 export const login = async (req, res) => {
   try {
-    const { username, password } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ success: false, error: "Username and password are required", message: "Username and password are required" });
+    const parseResult = loginSchema.safeParse(req.body);
+
+    if (!parseResult.success) {
+      return res.status(400).json({
+        success: false,
+        code: "VALIDATION_ERROR",
+        error: parseResult.error.issues[0].message,
+        message: parseResult.error.issues[0].message,
+      });
     }
-    const user = await User.findOne({ username });
+
+    const { email, username, identifier, password } = req.body;
+    const lookupKey = (email || username || identifier || "").trim();
+
+    const user = await User.findOne({
+      $or: [{ email: lookupKey.toLowerCase() }, { username: lookupKey }],
+    });
+
     if (!user) {
-      return res.status(404).json({ success: false, error: "User not found", message: "User not found" });
+      return res.status(401).json({
+        success: false,
+        code: "INVALID_CREDENTIALS",
+        error: "Invalid credentials",
+        message: "Invalid email or password",
+      });
     }
+
+    // Brute-force protection: check if account is currently locked
+    if (user.lockUntil && user.lockUntil > new Date()) {
+      const remainingMinutes = Math.ceil((user.lockUntil.getTime() - Date.now()) / (60 * 1000));
+      return res.status(423).json({
+        success: false,
+        code: "ACCOUNT_LOCKED",
+        error: "Account locked",
+        message: `Account is temporarily locked due to 5 consecutive failed attempts. Please try again in ${remainingMinutes} minute(s).`,
+        lockUntil: user.lockUntil,
+      });
+    }
+
+    // Verify password against stored bcrypt hash
     const isValidPassword = await bcrypt.compare(password, user.password);
+
     if (!isValidPassword) {
-      return res.status(401).json({ success: false, error: "Invalid password", message: "Invalid password" });
+      user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+
+      if (user.failedLoginAttempts >= 5) {
+        user.lockUntil = new Date(Date.now() + 15 * 60 * 1000); // 15-minute lockout
+        await user.save();
+
+        return res.status(423).json({
+          success: false,
+          code: "ACCOUNT_LOCKED",
+          error: "Account locked",
+          message: "Account has been locked for 15 minutes due to 5 consecutive failed login attempts.",
+          lockUntil: user.lockUntil,
+        });
+      }
+
+      await user.save();
+      return res.status(401).json({
+        success: false,
+        code: "INVALID_CREDENTIALS",
+        error: "Invalid password",
+        message: "Invalid email or password",
+        attemptsRemaining: Math.max(0, 5 - user.failedLoginAttempts),
+      });
     }
-    generateTokenAndSetCookie(user._id, res);
+
+    // Reset brute-force counter on successful password verification
+    if (user.failedLoginAttempts > 0 || user.lockUntil) {
+      user.failedLoginAttempts = 0;
+      user.lockUntil = null;
+      await user.save();
+    }
+
+    // Verification gate: block unverified users and trigger OTP verification
+    if (user.is_verified === false) {
+      const otp = generateSecureOtp();
+      const otpHash = hashOtp(otp);
+      const now = new Date();
+
+      await OtpVerification.findOneAndUpdate(
+        { email: user.email },
+        {
+          email: user.email,
+          otpHash,
+          expiresAt: new Date(now.getTime() + 5 * 60 * 1000),
+          resendAvailableAt: new Date(now.getTime() + 60 * 1000),
+          attemptsLeft: 3,
+          resendCount: 0,
+          tempUserData: {
+            name: user.name,
+            username: user.username,
+            hashedPassword: user.password,
+          },
+        },
+        { upsert: true, new: true }
+      );
+
+      console.log(`[KaushalAI Auth] Login gate OTP generated for unverified account ${user.email}: ${otp}`);
+
+      return res.status(403).json({
+        success: false,
+        code: "ACCOUNT_NOT_VERIFIED",
+        error: "Account not verified",
+        message: "Your account is not verified. Please verify your email with the 6-digit OTP code sent.",
+        email: user.email,
+        requiresOtp: true,
+        expiresInSeconds: 300,
+        resendCooldownSeconds: 60,
+        devOtp: process.env.NODE_ENV !== "production" ? otp : undefined,
+      });
+    }
+
+    // Issue secure Access and Refresh tokens
+    const tokens = generateTokensAndSetCookies(user._id, res);
+    user.refreshToken = tokens.refreshToken;
+    await user.save();
+
     return res.status(200).json({
       success: true,
       _id: user._id,
       username: user.username,
       name: user.name,
       email: user.email,
+      is_verified: true,
+      user: {
+        _id: user._id,
+        username: user.username,
+        name: user.name,
+        email: user.email,
+        is_verified: true,
+      },
       message: `logged in as ${user.username}`,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
     });
   } catch (error) {
-    console.error(`error in login controller: ${error.message}`);
-    return res.status(500).json({ success: false, error: "Internal Server Error", message: "Internal Server Error" });
+    console.error("Error in login controller:", error.message);
+    return res.status(500).json({
+      success: false,
+      code: "SERVER_ERROR",
+      error: error.message || "Internal Server Error",
+      message: "Internal Server Error",
+    });
   }
 };
 
+/**
+ * Controller: Clears authentication cookies
+ */
 export const logout = async (req, res) => {
   try {
-    const isProduction = process.env.NODE_ENV === "production" || !!process.env.RENDER;
-    res.cookie("jwt", "", {
+    const isProduction = process.env.NODE_ENV === "production" || Boolean(process.env.RENDER);
+    const clearOptions = {
       httpOnly: true,
       expires: new Date(0),
       sameSite: isProduction ? "None" : "Lax",
       secure: isProduction,
-    });
-    res.status(200).json({ message: "Logged out successfully" });
+    };
+
+    res.cookie("jwt", "", clearOptions);
+    res.cookie("accessToken", "", clearOptions);
+    res.cookie("refreshToken", "", clearOptions);
+
+    return res.status(200).json({ success: true, message: "Logged out successfully" });
   } catch (error) {
     console.error("Error in logout controller:", error.message);
-    res.status(500).json({ error: "Internal Server Error" });
+    return res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 };
+
+/**
+ * Controller: Fetches authenticated user profile
+ */
 export const getUser = async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select("-password");
-    res.status(200).json(user);
+    if (!user) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+    return res.status(200).json(user);
   } catch (error) {
-    console.error("Error in getuser controller:", error.message);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error("Error in getUser controller:", error.message);
+    return res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 };

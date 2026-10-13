@@ -8,6 +8,12 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   name: { type: String, required: true },
 
+  // Verification & Security Controls
+  is_verified: { type: Boolean, default: false },
+  failedLoginAttempts: { type: Number, default: 0 },
+  lockUntil: { type: Date, default: null },
+  refreshToken: { type: String, default: null },
+
   // Additions for challenges
   completedChallenges: [
     {
